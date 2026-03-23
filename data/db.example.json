@@ -1,0 +1,37 @@
+{
+  "products": [
+    {
+      "id": "p1",
+      "category": "Телефоны",
+      "brand": "Xiaomi",
+      "model": "Redmi A5",
+      "memory": "4/128GB",
+      "country": "RU",
+      "color": "Gold",
+      "price": 6400,
+      "currency": "RUB",
+      "inStock": true,
+      "createdAt": "2026-03-23T00:00:00.000Z",
+      "updatedAt": "2026-03-23T00:00:00.000Z"
+    },
+    {
+      "id": "p2",
+      "category": "Телефоны",
+      "brand": "Apple",
+      "model": "iPhone 17 Pro Max",
+      "memory": "256GB",
+      "country": "AE",
+      "color": "Blue",
+      "price": 108500,
+      "currency": "RUB",
+      "inStock": true,
+      "createdAt": "2026-03-23T00:00:00.000Z",
+      "updatedAt": "2026-03-23T00:00:00.000Z"
+    }
+  ],
+  "users": [],
+  "messages": [],
+  "offers": [],
+  "orders": [],
+  "leads": []
+}
