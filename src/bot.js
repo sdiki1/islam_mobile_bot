@@ -12,7 +12,6 @@ const MENU = {
 const MAIN_MENU = Markup.keyboard([
   [MENU.catalog, MENU.tradeIn],
   [MENU.sell, MENU.myRequests],
-  [MENU.info, MENU.cancel],
 ]).resize();
 
 const CATALOG_STEPS = ['category', 'brand', 'model', 'memory', 'country'];
@@ -64,7 +63,6 @@ const ORDER_TRADE_IN_KEYBOARD = Markup.inlineKeyboard([
 
 const CONTACT_REQUEST_KEYBOARD = Markup.keyboard([
   [Markup.button.contactRequest('📱 Отправить номер телефона')],
-  [MENU.cancel],
 ]).resize().oneTime();
 
 function escapeHtml(value) {
