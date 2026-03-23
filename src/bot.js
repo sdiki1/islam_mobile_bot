@@ -11,8 +11,7 @@ const MENU = {
 
 const MAIN_MENU = Markup.keyboard([
   [MENU.catalog, MENU.tradeIn],
-  [MENU.sell, MENU.myRequests],
-  [MENU.info, MENU.cancel],
+  [MENU.sell, MENU.myRequests]
 ]).resize();
 
 const CATALOG_STEPS = ['category', 'brand', 'model', 'memory', 'country'];
