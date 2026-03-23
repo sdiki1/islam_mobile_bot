@@ -55,6 +55,13 @@ const LEAD_TRIGGER_STEPS = [
   },
 ];
 
+const ORDER_TRADE_IN_KEYBOARD = Markup.inlineKeyboard([
+  [
+    Markup.button.callback('✅ Да, в трейд-ин', 'order_ti:yes'),
+    Markup.button.callback('❌ Нет', 'order_ti:no'),
+  ],
+]);
+
 function escapeHtml(value) {
   return (value || '')
     .toString()
@@ -320,9 +327,10 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
   function startOrderFlow(tgId, productId) {
     setUserFlow(tgId, {
       type: 'order',
-      step: 'offeredPrice',
+      step: 'tradeInDecision',
       data: {
         productId,
+        withTradeIn: null,
       },
     });
   }
@@ -570,17 +578,30 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
     }
 
     if (flow.type === 'order') {
-      if (flow.step === 'offeredPrice') {
+      if (flow.step === 'tradeInDecision') {
+        await replyWithLog(ctx, 'Выберите вариант кнопками ниже: покупка в трейд-ин?', ORDER_TRADE_IN_KEYBOARD);
+        return true;
+      }
+
+      if (flow.step === 'tradeInDevice') {
+        flow.data.tradeInDevice = text;
+        flow.step = 'tradeInDevicePrice';
+        setUserFlow(tgId, flow);
+        await replyWithLog(ctx, 'Укажите вашу оценку устройства в рублях.');
+        return true;
+      }
+
+      if (flow.step === 'tradeInDevicePrice') {
         const price = parsePrice(text);
         if (price === null) {
-          await replyWithLog(ctx, 'Введите цену числом. Если хотите цену из каталога, отправьте 0.');
+          await replyWithLog(ctx, 'Цена устройства должна быть числом. Пример: 35000');
           return true;
         }
 
-        flow.data.offeredPrice = price;
-        flow.step = 'contact';
+        flow.data.tradeInDevicePrice = price;
+        flow.step = 'tradeInPhoto';
         setUserFlow(tgId, flow);
-        await replyWithLog(ctx, 'Оставьте контакт для связи (телефон/Telegram).');
+        await replyWithLog(ctx, 'Пришлите фото вашего устройства.');
         return true;
       }
 
@@ -588,12 +609,22 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
         flow.data.contact = text;
 
         const product = store.getProductById(flow.data.productId);
-        const finalPrice = flow.data.offeredPrice === 0 ? Number(product?.price || 0) : flow.data.offeredPrice;
+        const finalPrice = Number(product?.price || 0);
+        const commentLines = [];
+        if (flow.data.withTradeIn) {
+          commentLines.push('Покупка в трейд-ин: Да');
+          commentLines.push(`Устройство клиента: ${flow.data.tradeInDevice || '-'}`);
+          commentLines.push(`Оценка устройства: ${formatPrice(flow.data.tradeInDevicePrice || 0)}`);
+          commentLines.push(`Фото (file_id): ${flow.data.tradeInPhotoFileId || '-'}`);
+        } else {
+          commentLines.push('Покупка в трейд-ин: Нет');
+        }
 
         const order = store.addOrder({
           tgId,
           productId: flow.data.productId,
           offeredPrice: finalPrice,
+          comment: commentLines.join('\n'),
           contact: flow.data.contact,
           status: 'new',
         });
@@ -608,7 +639,11 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
             leadType: 'buy',
             meta: {
               product: product ? productTitle(product) : flow.data.productId,
-              offeredPrice: formatPrice(finalPrice),
+              catalogPrice: formatPrice(finalPrice),
+              withTradeIn: flow.data.withTradeIn ? 'Да' : 'Нет',
+              tradeInDevice: flow.data.withTradeIn ? flow.data.tradeInDevice || '-' : '-',
+              tradeInDevicePrice: flow.data.withTradeIn ? formatPrice(flow.data.tradeInDevicePrice || 0) : '-',
+              tradeInPhotoFileId: flow.data.withTradeIn ? flow.data.tradeInPhotoFileId || '-' : '-',
               contact: flow.data.contact || '-',
             },
           });
@@ -620,6 +655,32 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
     }
 
     return false;
+  }
+
+  async function handlePhotoInput(ctx) {
+    const tgId = ctx.from?.id;
+    if (!tgId) {
+      return false;
+    }
+
+    const flow = getUserFlow(tgId);
+    if (!flow || flow.type !== 'order' || flow.step !== 'tradeInPhoto') {
+      return false;
+    }
+
+    const photos = ctx.message?.photo;
+    if (!Array.isArray(photos) || photos.length === 0) {
+      await replyWithLog(ctx, 'Для заявки в трейд-ин нужно фото устройства. Пришлите фото.');
+      return true;
+    }
+
+    const bestPhoto = photos[photos.length - 1];
+    flow.data.tradeInPhotoFileId = bestPhoto.file_id || '';
+    flow.step = 'contact';
+    setUserFlow(tgId, flow);
+
+    await replyWithLog(ctx, 'Фото получено. Оставьте контакт для связи (телефон/Telegram).');
+    return true;
   }
 
   async function runLeadTriggers() {
@@ -830,8 +891,38 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
     startOrderFlow(tgId, productId);
     await replyWithLog(
       ctx,
-      `Вы выбрали: ${productTitle(product)}\nВведите вашу цену предложения в рублях (или 0 по цене каталога).`
+      `Вы выбрали: ${productTitle(product)}\nСтоимость: ${formatPrice(product.price)}\nПокупка в трейд-ин?`,
+      ORDER_TRADE_IN_KEYBOARD
     );
+  });
+
+  bot.action(/^order_ti:(yes|no)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const tgId = ctx.from.id;
+    const flow = getUserFlow(tgId);
+
+    if (!flow || flow.type !== 'order') {
+      await replyWithLog(ctx, 'Заявка покупки не найдена. Выберите товар в каталоге заново.');
+      return;
+    }
+
+    const choice = ctx.match[1];
+
+    if (choice === 'yes') {
+      flow.data.withTradeIn = true;
+      flow.step = 'tradeInDevice';
+      setUserFlow(tgId, flow);
+      await replyWithLog(
+        ctx,
+        'Опишите ваше устройство для трейд-ин: марка, модель, память, состояние и комплектация.'
+      );
+      return;
+    }
+
+    flow.data.withTradeIn = false;
+    flow.step = 'contact';
+    setUserFlow(tgId, flow);
+    await replyWithLog(ctx, 'Оставьте контакт для связи (телефон/Telegram).');
   });
 
   bot.action(/^trade:(.+)$/, async (ctx) => {
@@ -877,8 +968,18 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
 
   bot.on('message', async (ctx, next) => {
     if (ctx.message && !('text' in ctx.message)) {
+      const mediaConsumed = await handlePhotoInput(ctx);
+      if (mediaConsumed) {
+        return;
+      }
+
       const flow = getUserFlow(ctx.from?.id);
       if (flow) {
+        if (flow.type === 'order' && flow.step === 'tradeInPhoto') {
+          await replyWithLog(ctx, 'Нужно именно фото устройства. Пришлите фото.');
+          return;
+        }
+
         await replyWithLog(ctx, 'Пожалуйста, отправьте ответ текстом, чтобы оформить заявку.');
         return;
       }

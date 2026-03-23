@@ -614,6 +614,7 @@ function createAdminApp({ store, adminPassword, sessionSecret, botApi }) {
             <td>${escapeHtml(user?.username ? `@${user.username}` : user?.firstName || '-')}</td>
             <td>${escapeHtml(product ? `${product.brand} ${product.model} ${product.memory}` : order.productId)}</td>
             <td>${formatPrice(order.offeredPrice)}</td>
+            <td style="white-space: pre-wrap;">${escapeHtml(order.comment || '-')}</td>
             <td>${escapeHtml(order.contact || '-')}</td>
             <td>${formatDateTime(order.createdAt)}</td>
             <td>
@@ -633,11 +634,11 @@ function createAdminApp({ store, adminPassword, sessionSecret, botApi }) {
         <table>
           <thead>
             <tr>
-              <th>ID</th><th>Клиент TG ID</th><th>Клиент</th><th>Товар</th><th>Цена</th><th>Контакт</th><th>Создано</th><th>Статус</th>
+              <th>ID</th><th>Клиент TG ID</th><th>Клиент</th><th>Товар</th><th>Цена</th><th>Детали</th><th>Контакт</th><th>Создано</th><th>Статус</th>
             </tr>
           </thead>
           <tbody>
-            ${rows || '<tr><td colspan="8">Пока нет заявок</td></tr>'}
+            ${rows || '<tr><td colspan="9">Пока нет заявок</td></tr>'}
           </tbody>
         </table>
       </div>
