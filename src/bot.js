@@ -11,7 +11,8 @@ const MENU = {
 
 const MAIN_MENU = Markup.keyboard([
   [MENU.catalog, MENU.tradeIn],
-  [MENU.sell, MENU.myRequests]
+  [MENU.sell, MENU.myRequests],
+  [MENU.info, MENU.cancel],
 ]).resize();
 
 const CATALOG_STEPS = ['category', 'brand', 'model', 'memory', 'country'];
@@ -60,6 +61,11 @@ const ORDER_TRADE_IN_KEYBOARD = Markup.inlineKeyboard([
     Markup.button.callback('❌ Нет', 'order_ti:no'),
   ],
 ]);
+
+const CONTACT_REQUEST_KEYBOARD = Markup.keyboard([
+  [Markup.button.contactRequest('📱 Отправить номер телефона')],
+  [MENU.cancel],
+]).resize().oneTime();
 
 function escapeHtml(value) {
   return (value || '')
@@ -236,9 +242,11 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
     if (nextStepIndex > 0) {
       navButtons.push(Markup.button.callback('⬅️ Назад', 'cf_back'));
     }
-    navButtons.push(Markup.button.callback('🔄 Сбросить', 'cf_reset'));
-
-    const keyboard = Markup.inlineKeyboard([...buildRows(optionButtons, 2), navButtons]);
+    const keyboardRows = buildRows(optionButtons, 2);
+    if (navButtons.length > 0) {
+      keyboardRows.push(navButtons);
+    }
+    const keyboard = Markup.inlineKeyboard(keyboardRows);
     const text = `Выберите ${STEP_LABELS[field]}:`;
 
     if (edit && ctx.callbackQuery) {
@@ -259,17 +267,17 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
     const products = store.getProducts({ filters });
 
     if (products.length === 0) {
-      const text = 'По выбранным параметрам пока нет позиций. Попробуйте сбросить фильтры.';
+      const text = 'По выбранным параметрам пока нет позиций. Попробуйте изменить выбор.';
       if (edit && ctx.callbackQuery) {
         try {
-          await ctx.editMessageText(text, Markup.inlineKeyboard([[Markup.button.callback('🔄 Сбросить', 'cf_reset')]]));
+          await ctx.editMessageText(text);
           return;
         } catch (_error) {
           // ignore
         }
       }
 
-      await replyWithLog(ctx, text, Markup.inlineKeyboard([[Markup.button.callback('🔄 Сбросить', 'cf_reset')]]));
+      await replyWithLog(ctx, text);
       return;
     }
 
@@ -420,6 +428,149 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
     await replyWithLog(ctx, 'С Вами сейчас свяжется менеджер', MAIN_MENU);
   }
 
+  async function askForContact(ctx) {
+    await replyWithLog(
+      ctx,
+      'Оставьте контакт для связи (телефон/Telegram).\nМожно нажать кнопку «📱 Отправить номер телефона» ниже.',
+      CONTACT_REQUEST_KEYBOARD
+    );
+  }
+
+  async function finalizeFlowWithContact(ctx, contactValue) {
+    const tgId = ctx.from.id;
+    const flow = getUserFlow(tgId);
+    if (!flow || flow.step !== 'contact') {
+      return false;
+    }
+
+    const normalizedContact = (contactValue || '').toString().trim();
+    if (!normalizedContact) {
+      await askForContact(ctx);
+      return true;
+    }
+
+    flow.data.contact = normalizedContact;
+
+    if (flow.type === 'tradein') {
+      const offer = store.addOffer({
+        tgId,
+        type: 'tradein',
+        desiredProductId: flow.data.desiredProductId || '',
+        offeredPrice: flow.data.offeredPrice || 0,
+        details: {
+          desiredItem: flow.data.desiredItemText || '',
+          offeredItem: flow.data.offeredItem || '',
+          condition: flow.data.condition || '',
+        },
+        contact: flow.data.contact,
+        status: 'new',
+      });
+
+      resetUserFlow(tgId);
+
+      if (offer) {
+        await createLeadAndNotify({
+          tgId,
+          sourceType: 'offer',
+          sourceId: offer.id,
+          leadType: 'tradein',
+          meta: {
+            desiredItem: flow.data.desiredItemText || '-',
+            offeredItem: flow.data.offeredItem || '-',
+            condition: flow.data.condition || '-',
+            offeredPrice: formatPrice(flow.data.offeredPrice || 0),
+            contact: flow.data.contact || '-',
+          },
+        });
+      }
+
+      await sendManagerWillContact(ctx);
+      return true;
+    }
+
+    if (flow.type === 'sell') {
+      const offer = store.addOffer({
+        tgId,
+        type: 'sell',
+        offeredPrice: flow.data.offeredPrice || 0,
+        details: {
+          item: flow.data.item || '',
+          condition: flow.data.condition || '',
+        },
+        contact: flow.data.contact,
+        status: 'new',
+      });
+
+      resetUserFlow(tgId);
+
+      if (offer) {
+        await createLeadAndNotify({
+          tgId,
+          sourceType: 'offer',
+          sourceId: offer.id,
+          leadType: 'sell',
+          meta: {
+            item: flow.data.item || '-',
+            condition: flow.data.condition || '-',
+            offeredPrice: formatPrice(flow.data.offeredPrice || 0),
+            contact: flow.data.contact || '-',
+          },
+        });
+      }
+
+      await sendManagerWillContact(ctx);
+      return true;
+    }
+
+    if (flow.type === 'order') {
+      const product = store.getProductById(flow.data.productId);
+      const finalPrice = Number(product?.price || 0);
+      const commentLines = [];
+      if (flow.data.withTradeIn) {
+        commentLines.push('Покупка в трейд-ин: Да');
+        commentLines.push(`Устройство клиента: ${flow.data.tradeInDevice || '-'}`);
+        commentLines.push(`Оценка устройства: ${formatPrice(flow.data.tradeInDevicePrice || 0)}`);
+        commentLines.push(`Фото (file_id): ${flow.data.tradeInPhotoFileId || '-'}`);
+      } else {
+        commentLines.push('Покупка в трейд-ин: Нет');
+      }
+
+      const order = store.addOrder({
+        tgId,
+        productId: flow.data.productId,
+        offeredPrice: finalPrice,
+        comment: commentLines.join('\n'),
+        contact: flow.data.contact,
+        status: 'new',
+      });
+
+      resetUserFlow(tgId);
+
+      if (order) {
+        await createLeadAndNotify({
+          tgId,
+          sourceType: 'order',
+          sourceId: order.id,
+          leadType: 'buy',
+          meta: {
+            product: product ? productTitle(product) : flow.data.productId,
+            catalogPrice: formatPrice(finalPrice),
+            withTradeIn: flow.data.withTradeIn ? 'Да' : 'Нет',
+            tradeInDevice: flow.data.withTradeIn ? flow.data.tradeInDevice || '-' : '-',
+            tradeInDevicePrice: flow.data.withTradeIn ? formatPrice(flow.data.tradeInDevicePrice || 0) : '-',
+            tradeInPhotoFileId: flow.data.withTradeIn ? flow.data.tradeInPhotoFileId || '-' : '-',
+            contact: flow.data.contact || '-',
+          },
+        });
+      }
+
+      await sendManagerWillContact(ctx);
+      return true;
+    }
+
+    return false;
+  }
+
   async function handleFlowInput(ctx) {
     const tgId = ctx.from.id;
     const text = (ctx.message.text || '').trim();
@@ -464,47 +615,12 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
         flow.data.offeredPrice = price;
         flow.step = 'contact';
         setUserFlow(tgId, flow);
-        await replyWithLog(ctx, 'Оставьте контакт для связи (телефон/Telegram).');
+        await askForContact(ctx);
         return true;
       }
 
       if (flow.step === 'contact') {
-        flow.data.contact = text;
-
-        const offer = store.addOffer({
-          tgId,
-          type: 'tradein',
-          desiredProductId: flow.data.desiredProductId || '',
-          offeredPrice: flow.data.offeredPrice || 0,
-          details: {
-            desiredItem: flow.data.desiredItemText || '',
-            offeredItem: flow.data.offeredItem || '',
-            condition: flow.data.condition || '',
-          },
-          contact: flow.data.contact,
-          status: 'new',
-        });
-
-        resetUserFlow(tgId);
-
-        if (offer) {
-          await createLeadAndNotify({
-            tgId,
-            sourceType: 'offer',
-            sourceId: offer.id,
-            leadType: 'tradein',
-            meta: {
-              desiredItem: flow.data.desiredItemText || '-',
-              offeredItem: flow.data.offeredItem || '-',
-              condition: flow.data.condition || '-',
-              offeredPrice: formatPrice(flow.data.offeredPrice || 0),
-              contact: flow.data.contact || '-',
-            },
-          });
-        }
-
-        await sendManagerWillContact(ctx);
-        return true;
+        return finalizeFlowWithContact(ctx, text);
       }
     }
 
@@ -535,44 +651,12 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
         flow.data.offeredPrice = price;
         flow.step = 'contact';
         setUserFlow(tgId, flow);
-        await replyWithLog(ctx, 'Оставьте контакт для связи (телефон/Telegram).');
+        await askForContact(ctx);
         return true;
       }
 
       if (flow.step === 'contact') {
-        flow.data.contact = text;
-
-        const offer = store.addOffer({
-          tgId,
-          type: 'sell',
-          offeredPrice: flow.data.offeredPrice || 0,
-          details: {
-            item: flow.data.item || '',
-            condition: flow.data.condition || '',
-          },
-          contact: flow.data.contact,
-          status: 'new',
-        });
-
-        resetUserFlow(tgId);
-
-        if (offer) {
-          await createLeadAndNotify({
-            tgId,
-            sourceType: 'offer',
-            sourceId: offer.id,
-            leadType: 'sell',
-            meta: {
-              item: flow.data.item || '-',
-              condition: flow.data.condition || '-',
-              offeredPrice: formatPrice(flow.data.offeredPrice || 0),
-              contact: flow.data.contact || '-',
-            },
-          });
-        }
-
-        await sendManagerWillContact(ctx);
-        return true;
+        return finalizeFlowWithContact(ctx, text);
       }
     }
 
@@ -605,51 +689,7 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
       }
 
       if (flow.step === 'contact') {
-        flow.data.contact = text;
-
-        const product = store.getProductById(flow.data.productId);
-        const finalPrice = Number(product?.price || 0);
-        const commentLines = [];
-        if (flow.data.withTradeIn) {
-          commentLines.push('Покупка в трейд-ин: Да');
-          commentLines.push(`Устройство клиента: ${flow.data.tradeInDevice || '-'}`);
-          commentLines.push(`Оценка устройства: ${formatPrice(flow.data.tradeInDevicePrice || 0)}`);
-          commentLines.push(`Фото (file_id): ${flow.data.tradeInPhotoFileId || '-'}`);
-        } else {
-          commentLines.push('Покупка в трейд-ин: Нет');
-        }
-
-        const order = store.addOrder({
-          tgId,
-          productId: flow.data.productId,
-          offeredPrice: finalPrice,
-          comment: commentLines.join('\n'),
-          contact: flow.data.contact,
-          status: 'new',
-        });
-
-        resetUserFlow(tgId);
-
-        if (order) {
-          await createLeadAndNotify({
-            tgId,
-            sourceType: 'order',
-            sourceId: order.id,
-            leadType: 'buy',
-            meta: {
-              product: product ? productTitle(product) : flow.data.productId,
-              catalogPrice: formatPrice(finalPrice),
-              withTradeIn: flow.data.withTradeIn ? 'Да' : 'Нет',
-              tradeInDevice: flow.data.withTradeIn ? flow.data.tradeInDevice || '-' : '-',
-              tradeInDevicePrice: flow.data.withTradeIn ? formatPrice(flow.data.tradeInDevicePrice || 0) : '-',
-              tradeInPhotoFileId: flow.data.withTradeIn ? flow.data.tradeInPhotoFileId || '-' : '-',
-              contact: flow.data.contact || '-',
-            },
-          });
-        }
-
-        await sendManagerWillContact(ctx);
-        return true;
+        return finalizeFlowWithContact(ctx, text);
       }
     }
 
@@ -678,8 +718,28 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
     flow.step = 'contact';
     setUserFlow(tgId, flow);
 
-    await replyWithLog(ctx, 'Фото получено. Оставьте контакт для связи (телефон/Telegram).');
+    await askForContact(ctx);
     return true;
+  }
+
+  async function handleContactInput(ctx) {
+    const tgId = ctx.from?.id;
+    if (!tgId) {
+      return false;
+    }
+
+    const flow = getUserFlow(tgId);
+    const contact = ctx.message?.contact;
+    if (!flow || flow.step !== 'contact' || !contact) {
+      return false;
+    }
+
+    const rawPhone = (contact.phone_number || '').toString().trim();
+    const phone = rawPhone ? (rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`) : '';
+    const fallbackName = `${contact.first_name || ''} ${contact.last_name || ''}`.trim();
+    const contactText = phone || fallbackName;
+
+    return finalizeFlowWithContact(ctx, contactText);
   }
 
   async function runLeadTriggers() {
@@ -870,12 +930,6 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
     await askCatalogStep(ctx, tgId, { edit: true });
   });
 
-  bot.action('cf_reset', async (ctx) => {
-    await ctx.answerCbQuery();
-    resetCatalogSession(ctx.from.id);
-    await askCatalogStep(ctx, ctx.from.id, { edit: true });
-  });
-
   bot.action(/^buy:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const tgId = ctx.from.id;
@@ -921,7 +975,7 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
     flow.data.withTradeIn = false;
     flow.step = 'contact';
     setUserFlow(tgId, flow);
-    await replyWithLog(ctx, 'Оставьте контакт для связи (телефон/Telegram).');
+    await askForContact(ctx);
   });
 
   bot.action(/^trade:(.+)$/, async (ctx) => {
@@ -969,6 +1023,11 @@ function createBot({ token, store, leadsChatId, adminChatIds = [] }) {
     if (ctx.message && !('text' in ctx.message)) {
       const mediaConsumed = await handlePhotoInput(ctx);
       if (mediaConsumed) {
+        return;
+      }
+
+      const contactConsumed = await handleContactInput(ctx);
+      if (contactConsumed) {
         return;
       }
 
